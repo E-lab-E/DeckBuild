@@ -121,6 +121,7 @@
 
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
 
 <script>
 // ここをFirebaseコンソールでコピーした設定値に書き換えてください
@@ -137,7 +138,11 @@ let firebaseReady = false;
 try{
   if(typeof firebase !== 'undefined'){
     firebase.initializeApp(firebaseConfig);
+
+    await firebase.auth().signInAnonymously();
+
     db = firebase.firestore();
+
     firebaseReady = true;
   }
 }catch(e){ console.error('firebase init failed', e); }
@@ -579,7 +584,27 @@ appEl.addEventListener('change', function(e){
   }
 });
 
-loadAll();
+appEl.addEventListener('change', function(e){
+  if(e.target.tagName === 'SELECT' && e.target.getAttribute('data-bind') === 'select-deck'){
+    selectDeck(e.target.value);
+  }
+});
+
+async function init() {
+
+  if (firebaseReady) {
+    try {
+      await firebase.auth().signInAnonymously();
+    } catch (e) {
+      console.error("匿名ログイン失敗", e);
+    }
+  }
+
+  await loadAll();
+
+}
+
+init();
 </script>
 </body>
 </html>
