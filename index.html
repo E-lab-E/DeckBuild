@@ -714,7 +714,46 @@ appEl.addEventListener('change', function(e){
   }
 });
 
-loadAll();
+// ---------- real-time sync (Firestore only) ----------
+let personListeners = {};
+function startRealtimeSync(){
+  if(!firebaseReady) return;
+  db.collection('kv').doc('people-list').onSnapshot(function(doc){
+    if(!doc.exists) return;
+    let people;
+    try{ people = JSON.parse(doc.data().value); }catch(e){ return; }
+    state.people = people;
+    const currentIds = new Set(people.map(p=>p.id));
+
+    people.forEach(function(p){
+      if(!personListeners[p.id]){
+        personListeners[p.id] = db.collection('kv').doc('decks-'+p.id).onSnapshot(function(d){
+          if(!d.exists) return;
+          try{
+            state.decksByPerson[p.id] = JSON.parse(d.data().value);
+            render();
+          }catch(e){ console.error('realtime decks sync failed', e); }
+        }, function(err){ console.error('decks listener error', err); });
+      }
+    });
+
+    Object.keys(personListeners).forEach(function(pid){
+      if(!currentIds.has(pid)){
+        personListeners[pid]();
+        delete personListeners[pid];
+        delete state.decksByPerson[pid];
+      }
+    });
+
+    if(state.currentPersonId && !currentIds.has(state.currentPersonId)){
+      state.currentPersonId = people[0] ? people[0].id : null;
+      state.currentDeckId = null;
+    }
+    render();
+  }, function(err){ console.error('people listener error', err); });
+}
+
+loadAll().then(startRealtimeSync);
 </script>
 </body>
 </html>
