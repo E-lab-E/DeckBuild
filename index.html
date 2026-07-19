@@ -150,7 +150,7 @@
   window.addEventListener('unhandledrejection', function(e){
     show('非同期エラー: ' + (e.reason && e.reason.message ? e.reason.message : e.reason));
   });
-  show('診断: このページのJavaScriptは実行されています。');
+  // 診断メッセージは動作確認用だったため削除済み（エラー検知自体は継続）
 })();
 </script>
 <div class="wrap" id="app"></div>
@@ -521,7 +521,7 @@ function renderDeckModal(){
       </div>
       <label>デッキリスト（貼り付け）</label>
       <textarea id="deck-raw-input" data-bind="deck-raw" rows="10" placeholder="1 Sol Ring&#10;1 Command Tower&#10;...&#10;&#10;Sideboard&#10;1 ...">${escapeHtml(d.raw)}</textarea>
-      <div class="parse-preview">解析結果：メイン ${preview.main.length} 種 ／ サイド ${preview.side.length} 種 ／ 気になるカード ${preview.maybe.length} 種（サイド・気になるカードは共有チェック対象外です）</div>
+      <div class="parse-preview">解析結果：メイン ${preview.main.length} 種 ／ サイド ${preview.side.length} 種（サイドは共有チェック対象外です）</div>
       ${d.error ? `<p style="color:#f0a49e;font-size:12px;margin-top:8px">${escapeHtml(d.error)}</p>` : ''}
       <div class="row" style="margin-top:16px;justify-content:flex-end">
         <button class="btn ghost" data-action="close-deck-modal">キャンセル</button>
@@ -649,7 +649,7 @@ function updateDraftRaw(v){
   const preview = parseDecklist(v);
   const previewEl = document.querySelector('.modal .parse-preview');
   if(previewEl){
-    previewEl.textContent = `解析結果：メイン ${preview.main.length} 種 ／ サイド ${preview.side.length} 種 ／ 気になるカード ${preview.maybe.length} 種（サイド・気になるカードは共有チェック対象外です）`;
+    previewEl.textContent = `解析結果：メイン ${preview.main.length} 種 ／ サイド ${preview.side.length} 種（サイドは共有チェック対象外です）`;
   }
 }
 
