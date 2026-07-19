@@ -117,38 +117,31 @@
 </style>
 </head>
 <body>
+<div id="js-error-banner" style="display:none;background:#c1443c;color:#fff;padding:12px 16px;font-family:sans-serif;font-size:13px;white-space:pre-wrap;"></div>
+<script>
+(function(){
+  var seen = {};
+  function show(msg){
+    if(seen[msg]) return; seen[msg] = true;
+    var el = document.getElementById('js-error-banner');
+    if(!el) return;
+    el.style.display = 'block';
+    el.textContent = (el.textContent ? el.textContent + '\n\n' : '') + msg;
+  }
+  window.addEventListener('error', function(e){
+    show('JSエラー: ' + e.message + ' (' + e.filename + ':' + e.lineno + ')');
+  });
+  window.addEventListener('unhandledrejection', function(e){
+    show('非同期エラー: ' + (e.reason && e.reason.message ? e.reason.message : e.reason));
+  });
+  show('診断: このページのJavaScriptは実行されています。');
+})();
+</script>
 <div class="wrap" id="app"></div>
 
-<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
-
 <script>
-// ここをFirebaseコンソールでコピーした設定値に書き換えてください
-const firebaseConfig = {
-  apiKey: "AIzaSyBm-9dvk0Ds6VoAysBDjeKlJO3IbxXZ-SM",
-  authDomain: "deck-build-30944.firebaseapp.com",
-  projectId: "deck-build-30944",
-  storageBucket: "deck-build-30944.firebasestorage.app",
-  messagingSenderId: "113209534036",
-  appId: "1:113209534036:web:429f3136e351a8890eefc1"
-};
-let db = null;
-let firebaseReady = false;
-try{
-  if(typeof firebase !== 'undefined'){
-    firebase.initializeApp(firebaseConfig);
+const firebaseReady = false;
 
-    await firebase.auth().signInAnonymously();
-
-    db = firebase.firestore();
-
-    firebaseReady = true;
-  }
-}catch(e){ console.error('firebase init failed', e); }
-</script>
-
-<script>
 const SECTION_RE = {
   side: /^(sideboard|side\s*-?board|sb|サイドボード)\s*:?\s*$/i,
   maybe: /^(maybeboard|maybe\s*-?board|考え中|気になるカード|検討中|カード候補)\s*:?\s*$/i,
@@ -158,36 +151,21 @@ const SECTION_RE = {
 const PERSON_COLORS = ['#e8c96b','#5fa8d3','#7fb37a','#c1443c','#a389cf','#5fc2c2'];
 
 let state = { people: [], currentPersonId: null, decksByPerson: {}, currentDeckId: null,
-              modal: null, modalDraft: null, personDraft: null, pendingDelete: null, loaded:false };
+              modal: null, modalDraft: null, personDraft: null, pendingDelete: null, loaded:false, newPersonName:'' };
 
 function uid(){ return Date.now().toString(36)+Math.random().toString(36).slice(2,8); }
 
 async function storageGet(key){
-  if(firebaseReady){
-    try{
-      const doc = await db.collection('kv').doc(key).get();
-      if(doc.exists) return JSON.parse(doc.data().value);
-      return null;
-    }catch(e){ console.error('firestore get failed, falling back to local storage', e); }
-  }
   try{
     const raw = localStorage.getItem('mtgds:'+key);
     return raw ? JSON.parse(raw) : null;
-  }catch(e){ return null; }
+  }catch(e){ console.error('storage get failed', e); return null; }
 }
 async function storageSet(key, value){
-  let ok = false;
-  if(firebaseReady){
-    try{
-      await db.collection('kv').doc(key).set({ value: JSON.stringify(value) });
-      ok = true;
-    }catch(e){ console.error('firestore set failed, saving locally only', e); }
-  }
   try{
     localStorage.setItem('mtgds:'+key, JSON.stringify(value));
-    ok = true;
-  }catch(e){ console.error('local storage set failed', e); }
-  return ok;
+    return true;
+  }catch(e){ console.error('storage set failed', e); return false; }
 }
 
 async function loadAll(){
@@ -259,11 +237,9 @@ function render(){
   let html = '';
   html += `<h1>デッキ入替アシスタント</h1>`;
   html += `<p class="sub">複数のコマンダーデッキを登録しておくと、他のデッキと共有しているカード（＝入替が必要なカード）を一目で確認できます。リンクを知っている人だけがアクセスでき、ログインは不要です。</p>`;
-  if(!firebaseReady){
-    html += `<div class="card" style="border-color:var(--danger-dim)"><p style="margin:0;font-size:12.5px;color:#f0a49e;">オンライン同期が読み込めなかったため、この端末だけに保存するモードで動作しています（他の人とはまだ共有されません）。ページを再読み込みすると自動的に復旧を試みます。</p></div>`;
-  }
+  html += `<div class="card" style="border-color:var(--gold-dim)"><p style="margin:0;font-size:12.5px;color:#f5e6a8;">現在はこの端末だけに保存されるモードです（動作確認優先のため）。友人との共有機能は、この状態で正常動作を確認できたら追加します。</p></div>`;
 
-  html += `<div class="card"><div class="top-actions"><div class="row" id="person-pills">`;
+  html += `<div class="card"><div class="row" id="person-pills">`;
   state.people.forEach((p)=>{
     const active = p.id === state.currentPersonId ? 'active' : '';
     html += `<div class="pill ${active}" data-action="select-person" data-id="${p.id}">
@@ -271,10 +247,14 @@ function render(){
       <span class="btn ghost small" style="padding:0 4px;margin-left:4px" data-action="delete-person" data-id="${p.id}">×</span>
     </div>`;
   });
-  html += `</div><button class="btn" data-action="add-person">＋ 人を追加</button></div>`;
+  html += `</div>`;
   if(state.pendingDelete && state.pendingDelete.type==='person'){
     html += renderConfirm(`「${escapeHtml(personName(state.pendingDelete.id))}」を削除しますか？登録された全デッキも削除されます。`, 'confirm-delete-person');
   }
+  html += `<div class="row" style="margin-top:12px">
+    <input type="text" id="new-person-input" data-bind="new-person-name" placeholder="名前を入力してEnterまたは追加を押す" value="${escapeAttr(state.newPersonName||'')}" style="flex:1;min-width:160px">
+    <button class="btn primary" data-action="add-person-direct">追加</button>
+  </div>`;
   html += `</div>`;
 
   if(!state.currentPersonId){
@@ -445,6 +425,18 @@ async function confirmAddPerson(){
   await savePeople();
   render();
 }
+function updateNewPersonName(v){ state.newPersonName = v; }
+async function addPersonDirect(){
+  const name = (state.newPersonName || '').trim();
+  if(!name) return;
+  const p = { id: uid(), name, color: PERSON_COLORS[state.people.length % PERSON_COLORS.length] };
+  state.people.push(p);
+  state.decksByPerson[p.id] = [];
+  state.currentPersonId = p.id;
+  state.newPersonName = '';
+  await savePeople();
+  render();
+}
 function selectPerson(id){ state.currentPersonId = id; state.currentDeckId = null; render(); }
 function askDeletePerson(id){ state.pendingDelete = { type:'person', id }; render(); }
 function askDeleteDeck(id){ state.pendingDelete = { type:'deck', id }; render(); }
@@ -551,6 +543,7 @@ appEl.addEventListener('click', function(e){
     case 'select-person': selectPerson(id); break;
     case 'delete-person': askDeletePerson(id); break;
     case 'add-person': openAddPersonModal(); break;
+    case 'add-person-direct': addPersonDirect(); break;
     case 'confirm-delete-person': confirmDeletePerson(); break;
     case 'confirm-delete-deck': confirmDeleteDeck(); break;
     case 'cancel-delete': cancelDelete(); break;
@@ -575,7 +568,12 @@ appEl.addEventListener('input', function(e){
     case 'deck-name': updateDraftName(v); break;
     case 'deck-url': updateDraftUrl(v); break;
     case 'deck-raw': updateDraftRaw(v); break;
+    case 'new-person-name': updateNewPersonName(v); break;
   }
+});
+
+appEl.addEventListener('keydown', function(e){
+  if(e.key === 'Enter' && e.target.id === 'new-person-input'){ addPersonDirect(); }
 });
 
 appEl.addEventListener('change', function(e){
@@ -584,27 +582,7 @@ appEl.addEventListener('change', function(e){
   }
 });
 
-appEl.addEventListener('change', function(e){
-  if(e.target.tagName === 'SELECT' && e.target.getAttribute('data-bind') === 'select-deck'){
-    selectDeck(e.target.value);
-  }
-});
-
-async function init() {
-
-  if (firebaseReady) {
-    try {
-      await firebase.auth().signInAnonymously();
-    } catch (e) {
-      console.error("匿名ログイン失敗", e);
-    }
-  }
-
-  await loadAll();
-
-}
-
-init();
+loadAll();
 </script>
 </body>
 </html>
