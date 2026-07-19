@@ -172,9 +172,18 @@ const SECTION_RE = {
 const PERSON_COLORS = ['#e8c96b','#5fa8d3','#7fb37a','#c1443c','#a389cf','#5fc2c2'];
 
 let state = { people: [], currentPersonId: null, decksByPerson: {}, currentDeckId: null,
-              modal: null, modalDraft: null, personDraft: null, pendingDelete: null, loaded:false, newPersonName:'' };
+              modal: null, modalDraft: null, personDraft: null, pendingDelete: null, loaded:false,
+              newPersonName:'', newPersonPass:'', newPersonError:null, unlockDraft:'', unlockError:null,
+              deletePassDraft:'', deletePassError:null,
+              unlockedPersons: new Set() };
 
 function uid(){ return Date.now().toString(36)+Math.random().toString(36).slice(2,8); }
+
+async function sha256(text){
+  const enc = new TextEncoder().encode(text);
+  const buf = await crypto.subtle.digest('SHA-256', enc);
+  return Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,'0')).join('');
+}
 
 async function storageGet(key){
   if(firebaseReady){
@@ -298,17 +307,47 @@ function render(){
   });
   html += `</div>`;
   if(state.pendingDelete && state.pendingDelete.type==='person'){
-    html += renderConfirm(`「${escapeHtml(personName(state.pendingDelete.id))}」を削除しますか？登録された全デッキも削除されます。`, 'confirm-delete-person');
+    const delPerson = state.people.find(p=>p.id===state.pendingDelete.id);
+    html += `<div class="confirm-inline" style="margin-top:8px;flex-wrap:wrap">
+      <span>「${escapeHtml(delPerson ? delPerson.name : '')}」を削除しますか？登録された全デッキも削除されます。</span>`;
+    if(delPerson && delPerson.passHash){
+      html += `<input type="text" id="delete-pass-input" data-bind="delete-pass" placeholder="合言葉を入力して確認" value="${escapeAttr(state.deletePassDraft||'')}" style="min-width:140px">`;
+    }
+    html += `<button class="btn small danger" data-action="confirm-delete-person">削除する</button>
+      <button class="btn small ghost" data-action="cancel-delete">キャンセル</button>
+    </div>`;
+    if(state.deletePassError){
+      html += `<p style="color:#f0a49e;font-size:12px;margin:4px 0 0">${escapeHtml(state.deletePassError)}</p>`;
+    }
   }
   html += `<div class="row" style="margin-top:12px">
-    <input type="text" id="new-person-input" data-bind="new-person-name" placeholder="名前を入力してEnterまたは追加を押す" value="${escapeAttr(state.newPersonName||'')}" style="flex:1;min-width:160px">
+    <input type="text" id="new-person-input" data-bind="new-person-name" placeholder="名前を入力" value="${escapeAttr(state.newPersonName||'')}" style="flex:1;min-width:140px">
+    <input type="text" id="new-person-pass-input" data-bind="new-person-pass" placeholder="合言葉（必須）" value="${escapeAttr(state.newPersonPass||'')}" style="flex:1;min-width:140px">
     <button class="btn primary" data-action="add-person-direct">追加</button>
-  </div>`;
+  </div>
+  ${state.newPersonError ? `<p style="color:#f0a49e;font-size:12px;margin:6px 0 0">${escapeHtml(state.newPersonError)}</p>` : ''}
+  <p style="font-size:11px;color:var(--muted);margin:6px 0 0">合言葉は必須です。設定した合言葉を知っている人だけが、その人のデッキを閲覧・削除できます。</p>`;
   html += `</div>`;
 
   if(!state.currentPersonId){
     html += `<div class="card empty">まずは「＋ 人を追加」から利用者を登録してください（例：あなたの名前や友人の名前）。</div>`;
     app.innerHTML = html;
+    return;
+  }
+
+  const currentPerson = state.people.find(p=>p.id===state.currentPersonId);
+  if(currentPerson && currentPerson.passHash && !state.unlockedPersons.has(currentPerson.id)){
+    html += `<div class="card">
+      <p style="font-size:13px;margin:0 0 10px">「${escapeHtml(currentPerson.name)}」のデッキは合言葉で保護されています。</p>
+      <div class="row">
+        <input type="text" id="unlock-input" data-bind="unlock-pass" placeholder="合言葉を入力" value="${escapeAttr(state.unlockDraft||'')}" style="flex:1;min-width:160px">
+        <button class="btn primary" data-action="try-unlock">開く</button>
+      </div>
+      ${state.unlockError ? `<p style="color:#f0a49e;font-size:12px;margin-top:8px">${escapeHtml(state.unlockError)}</p>` : ''}
+    </div>`;
+    app.innerHTML = html;
+    const ui = document.getElementById('unlock-input');
+    if(ui) ui.focus();
     return;
   }
 
@@ -481,27 +520,59 @@ async function confirmAddPerson(){
   render();
 }
 function updateNewPersonName(v){ state.newPersonName = v; }
+function updateNewPersonPass(v){ state.newPersonPass = v; }
 async function addPersonDirect(){
   const name = (state.newPersonName || '').trim();
-  if(!name) return;
-  const p = { id: uid(), name, color: PERSON_COLORS[state.people.length % PERSON_COLORS.length] };
+  const pass = (state.newPersonPass || '').trim();
+  if(!name){ state.newPersonError = '名前を入力してください'; render(); return; }
+  if(!pass){ state.newPersonError = '合言葉を入力してください'; render(); return; }
+  state.newPersonError = null;
+  const p = { id: uid(), name, color: PERSON_COLORS[state.people.length % PERSON_COLORS.length], passHash: await sha256(pass) };
   state.people.push(p);
   state.decksByPerson[p.id] = [];
   state.currentPersonId = p.id;
+  state.unlockedPersons.add(p.id); // the person who just registered doesn't need to re-enter it immediately
   state.newPersonName = '';
+  state.newPersonPass = '';
   await savePeople();
   render();
 }
-function selectPerson(id){ state.currentPersonId = id; state.currentDeckId = null; render(); }
-function askDeletePerson(id){ state.pendingDelete = { type:'person', id }; render(); }
+function updateUnlockDraft(v){ state.unlockDraft = v; }
+async function tryUnlock(){
+  const person = state.people.find(p=>p.id===state.currentPersonId);
+  if(!person) return;
+  const attempt = (state.unlockDraft || '').trim();
+  if(!attempt){ state.unlockError = '合言葉を入力してください'; render(); return; }
+  const hash = await sha256(attempt);
+  if(hash === person.passHash){
+    state.unlockedPersons.add(person.id);
+    state.unlockDraft = '';
+    state.unlockError = null;
+  } else {
+    state.unlockError = '合言葉が違います';
+  }
+  render();
+}
+function updateDeletePassDraft(v){ state.deletePassDraft = v; }
+function selectPerson(id){ state.currentPersonId = id; state.currentDeckId = null; state.unlockDraft=''; state.unlockError=null; render(); }
+function askDeletePerson(id){ state.pendingDelete = { type:'person', id }; state.deletePassDraft=''; state.deletePassError=null; render(); }
 function askDeleteDeck(id){ state.pendingDelete = { type:'deck', id }; render(); }
-function cancelDelete(){ state.pendingDelete = null; render(); }
+function cancelDelete(){ state.pendingDelete = null; state.deletePassDraft=''; state.deletePassError=null; render(); }
 async function confirmDeletePerson(){
   const id = state.pendingDelete.id;
+  const person = state.people.find(p=>p.id===id);
+  if(person && person.passHash){
+    const attempt = (state.deletePassDraft || '').trim();
+    if(!attempt){ state.deletePassError = '合言葉を入力してください'; render(); return; }
+    const hash = await sha256(attempt);
+    if(hash !== person.passHash){ state.deletePassError = '合言葉が違います'; render(); return; }
+  }
   state.people = state.people.filter(p=>p.id!==id);
   delete state.decksByPerson[id];
   if(state.currentPersonId === id) state.currentPersonId = (state.people[0] ? state.people[0].id : null);
   state.pendingDelete = null;
+  state.deletePassDraft = '';
+  state.deletePassError = null;
   await savePeople();
   await storageSet('decks-'+id, []);
   render();
@@ -611,6 +682,7 @@ appEl.addEventListener('click', function(e){
     case 'close-deck-modal': closeModal(); break;
     case 'try-auto-fetch': tryAutoFetch(); break;
     case 'save-deck-modal': saveDeckModal(); break;
+    case 'try-unlock': tryUnlock(); break;
   }
 });
 
@@ -624,11 +696,16 @@ appEl.addEventListener('input', function(e){
     case 'deck-url': updateDraftUrl(v); break;
     case 'deck-raw': updateDraftRaw(v); break;
     case 'new-person-name': updateNewPersonName(v); break;
+    case 'new-person-pass': updateNewPersonPass(v); break;
+    case 'unlock-pass': updateUnlockDraft(v); break;
+    case 'delete-pass': updateDeletePassDraft(v); break;
   }
 });
 
 appEl.addEventListener('keydown', function(e){
-  if(e.key === 'Enter' && e.target.id === 'new-person-input'){ addPersonDirect(); }
+  if(e.key === 'Enter' && (e.target.id === 'new-person-input' || e.target.id === 'new-person-pass-input')){ addPersonDirect(); }
+  if(e.key === 'Enter' && e.target.id === 'unlock-input'){ tryUnlock(); }
+  if(e.key === 'Enter' && e.target.id === 'delete-pass-input'){ confirmDeletePerson(); }
 });
 
 appEl.addEventListener('change', function(e){
