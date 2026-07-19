@@ -15,6 +15,8 @@
     --gold-dim:#8a7530;
     --danger:#c1443c;
     --danger-dim:#7a2e28;
+    --success:#4fae7c;
+    --success-dim:#2f6b4c;
   }
   *{box-sizing:border-box;}
   body{
@@ -91,19 +93,33 @@
   .legend{display:flex;gap:18px;font-size:11.5px;color:var(--muted);margin-bottom:14px;align-items:center;}
   .legend .chip{display:inline-flex;align-items:center;gap:6px;}
   .swatch{width:14px;height:14px;border-radius:3px;}
-  .swatch.shared{background:linear-gradient(135deg,#f5da8a,var(--gold));}
+  .swatch.critical{background:linear-gradient(135deg,#e8877f,var(--danger));}
+  .swatch.partial{background:linear-gradient(135deg,#f5da8a,var(--gold));}
+  .swatch.sufficient{background:linear-gradient(135deg,#8fd4ac,var(--success));}
   .swatch.unique{background:var(--surface2);border:1px solid var(--border);opacity:.5;}
   .card-row{
-    display:flex;justify-content:space-between;align-items:baseline;
+    display:flex;justify-content:space-between;align-items:center;
     padding:8px 12px;border-radius:6px;margin-bottom:4px;
     font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:13px;
     border-left:3px solid transparent;
   }
-  .card-row.shared{
+  .card-row.tier-critical{
+    background:linear-gradient(90deg, rgba(193,68,60,.16), transparent 70%);
+    border-left-color:var(--danger);
+  }
+  .card-row.tier-partial{
     background:linear-gradient(90deg, rgba(212,175,55,.14), transparent 70%);
     border-left-color:var(--gold);
   }
+  .card-row.tier-sufficient{
+    background:linear-gradient(90deg, rgba(79,174,124,.14), transparent 70%);
+    border-left-color:var(--success);
+  }
   .card-row.unique{opacity:.42;}
+  .owned-input{
+    width:44px;background:var(--bg);border:1px solid var(--border);color:var(--text);
+    padding:3px 4px;border-radius:5px;font-size:12px;text-align:center;flex-shrink:0;
+  }
   .card-row .cname{flex:1;padding-right:10px;}
   .card-row .ccount{color:var(--muted);width:26px;text-align:right;flex-shrink:0;}
   .card-row .cwhere{color:#e0c25f;font-size:11px;font-family:-apple-system,sans-serif;margin-left:10px;flex-shrink:0;}
@@ -171,7 +187,7 @@ const SECTION_RE = {
 };
 const PERSON_COLORS = ['#e8c96b','#5fa8d3','#7fb37a','#c1443c','#a389cf','#5fc2c2'];
 
-let state = { people: [], currentPersonId: null, decksByPerson: {}, currentDeckId: null,
+let state = { people: [], currentPersonId: null, decksByPerson: {}, ownedByPerson: {}, currentDeckId: null,
               modal: null, modalDraft: null, personDraft: null, pendingDelete: null, loaded:false,
               newPersonName:'', newPersonPass:'', newPersonError:null, unlockDraft:'', unlockError:null,
               deletePassDraft:'', deletePassError:null,
@@ -220,6 +236,8 @@ async function loadAll(){
   for(const p of state.people){
     const decks = await storageGet('decks-'+p.id);
     state.decksByPerson[p.id] = decks || [];
+    const owned = await storageGet('owned-'+p.id);
+    state.ownedByPerson[p.id] = owned || {};
   }
   state.loaded = true;
   render();
@@ -227,6 +245,7 @@ async function loadAll(){
 
 async function savePeople(){ await storageSet('people-list', state.people); }
 async function saveDecks(personId){ await storageSet('decks-'+personId, state.decksByPerson[personId] || []); }
+async function saveOwned(personId){ await storageSet('owned-'+personId, state.ownedByPerson[personId] || {}); }
 
 // ---------- decklist parsing ----------
 function parseDecklist(raw){
@@ -390,7 +409,21 @@ function render(){
         otherCardMap[c.name].push(o.name);
       });
     });
+    const owned = state.ownedByPerson[state.currentPersonId] || {};
     const sharedCount = deck.main.filter(c=>otherCardMap[c.name]).length;
+
+    const tierOrder = { critical:0, partial:1, sufficient:2, unique:3 };
+    function cardInfo(c){
+      const sharedWith = otherCardMap[c.name];
+      const requiredCount = sharedWith ? sharedWith.length + 1 : 1;
+      const ownedQty = owned[c.name] || 1;
+      let tier;
+      if(!sharedWith) tier = 'unique';
+      else if(ownedQty <= 1) tier = 'critical';
+      else if(ownedQty < requiredCount) tier = 'partial';
+      else tier = 'sufficient';
+      return { sharedWith, requiredCount, ownedQty, tier };
+    }
 
     html += `<div class="card">
       <div class="top-actions">
@@ -405,24 +438,26 @@ function render(){
         <div><b>${deck.main.length-sharedCount}</b>このデッキ専用</div>
       </div>
       <div class="legend">
-        <span class="chip"><span class="swatch shared"></span>共有中（入替チェック対象）</span>
+        <span class="chip"><span class="swatch critical"></span>1枚しかなく要入替</span>
+        <span class="chip"><span class="swatch partial"></span>複数枚あるが不足</span>
+        <span class="chip"><span class="swatch sufficient"></span>枚数は足りている</span>
         <span class="chip"><span class="swatch unique"></span>このデッキ専用</span>
       </div>`;
     if(!deck.main.length){
       html += `<div class="empty">メインボードのカードがありません。</div>`;
     } else {
       const sortedMain = deck.main.slice().sort((a,b)=>{
-        const aShared = !!otherCardMap[a.name];
-        const bShared = !!otherCardMap[b.name];
-        if(aShared !== bShared) return aShared ? -1 : 1;
+        const ta = cardInfo(a).tier, tb = cardInfo(b).tier;
+        if(ta !== tb) return tierOrder[ta] - tierOrder[tb];
         return a.name.localeCompare(b.name,'ja');
       });
       sortedMain.forEach(c=>{
-        const shared = otherCardMap[c.name];
-        html += `<div class="card-row ${shared?'shared':'unique'}">
+        const info = cardInfo(c);
+        html += `<div class="card-row ${info.tier==='unique' ? 'unique' : 'tier-'+info.tier}">
           <span class="cname">${escapeHtml(c.name)}</span>
-          ${shared ? `<span class="cwhere">※ ${shared.map(escapeHtml).join('・')}</span>` : ''}
+          ${info.sharedWith ? `<span class="cwhere">※ ${info.sharedWith.map(escapeHtml).join('・')}</span>` : ''}
           <span class="ccount">×${c.count}</span>
+          ${info.sharedWith ? `<input type="number" class="owned-input" min="1" step="1" data-bind="owned-qty" data-card-name="${escapeAttr(c.name)}" value="${info.ownedQty}" title="所持枚数">` : ''}
         </div>`;
       });
     }
@@ -554,6 +589,14 @@ async function tryUnlock(){
   render();
 }
 function updateDeletePassDraft(v){ state.deletePassDraft = v; }
+async function updateOwnedQty(name, qty){
+  const pid = state.currentPersonId;
+  if(!pid) return;
+  if(!state.ownedByPerson[pid]) state.ownedByPerson[pid] = {};
+  state.ownedByPerson[pid][name] = qty;
+  await saveOwned(pid);
+  render();
+}
 function selectPerson(id){ state.currentPersonId = id; state.currentDeckId = null; state.unlockDraft=''; state.unlockError=null; render(); }
 function askDeletePerson(id){ state.pendingDelete = { type:'person', id }; state.deletePassDraft=''; state.deletePassError=null; render(); }
 function askDeleteDeck(id){ state.pendingDelete = { type:'deck', id }; render(); }
@@ -712,10 +755,17 @@ appEl.addEventListener('change', function(e){
   if(e.target.tagName === 'SELECT' && e.target.getAttribute('data-bind') === 'select-deck'){
     selectDeck(e.target.value);
   }
+  if(e.target.getAttribute('data-bind') === 'owned-qty'){
+    const name = e.target.getAttribute('data-card-name');
+    let v = parseInt(e.target.value, 10);
+    if(!v || v < 1) v = 1;
+    updateOwnedQty(name, v);
+  }
 });
 
 // ---------- real-time sync (Firestore only) ----------
 let personListeners = {};
+let ownedListeners = {};
 function startRealtimeSync(){
   if(!firebaseReady) return;
   db.collection('kv').doc('people-list').onSnapshot(function(doc){
@@ -735,6 +785,15 @@ function startRealtimeSync(){
           }catch(e){ console.error('realtime decks sync failed', e); }
         }, function(err){ console.error('decks listener error', err); });
       }
+      if(!ownedListeners[p.id]){
+        ownedListeners[p.id] = db.collection('kv').doc('owned-'+p.id).onSnapshot(function(d){
+          if(!d.exists) return;
+          try{
+            state.ownedByPerson[p.id] = JSON.parse(d.data().value);
+            render();
+          }catch(e){ console.error('realtime owned sync failed', e); }
+        }, function(err){ console.error('owned listener error', err); });
+      }
     });
 
     Object.keys(personListeners).forEach(function(pid){
@@ -742,6 +801,8 @@ function startRealtimeSync(){
         personListeners[pid]();
         delete personListeners[pid];
         delete state.decksByPerson[pid];
+        if(ownedListeners[pid]){ ownedListeners[pid](); delete ownedListeners[pid]; }
+        delete state.ownedByPerson[pid];
       }
     });
 
