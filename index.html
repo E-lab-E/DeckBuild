@@ -190,7 +190,7 @@ const PERSON_COLORS = ['#e8c96b','#5fa8d3','#7fb37a','#c1443c','#a389cf','#5fc2c
 let state = { people: [], currentPersonId: null, decksByPerson: {}, ownedByPerson: {}, currentDeckId: null,
               modal: null, modalDraft: null, personDraft: null, pendingDelete: null, loaded:false,
               newPersonName:'', newPersonPass:'', newPersonError:null, unlockDraft:'', unlockError:null,
-              deletePassDraft:'', deletePassError:null,
+              deletePassDraft:'', deletePassError:null, compareDeckIds: null,
               unlockedPersons: new Set() };
 
 function uid(){ return Date.now().toString(36)+Math.random().toString(36).slice(2,8); }
@@ -402,8 +402,12 @@ function render(){
     }
     const deck = decks.find(d=>d.id===state.currentDeckId);
     const others = decks.filter(d=>d.id!==deck.id);
+    const compareOthers = (!state.compareDeckIds || state.compareDeckIds.size===0)
+      ? others
+      : others.filter(o=>state.compareDeckIds.has(o.id));
+    const compareIsAll = !state.compareDeckIds || state.compareDeckIds.size===0;
     const otherCardMap = {};
-    others.forEach(o=>{
+    compareOthers.forEach(o=>{
       o.main.forEach(c=>{
         if(!otherCardMap[c.name]) otherCardMap[c.name]=[];
         otherCardMap[c.name].push(o.name);
@@ -434,10 +438,21 @@ function render(){
       </div>
       <div class="stat-bar">
         <div><b>${deck.main.length}</b>メイン種類数</div>
-        <div><b style="color:#e0c25f">${sharedCount}</b>他デッキと共有中</div>
+        <div><b style="color:#e0c25f">${sharedCount}</b>被り中</div>
         <div><b>${deck.main.length-sharedCount}</b>このデッキ専用</div>
-      </div>
-      <div class="legend">
+      </div>`;
+    if(others.length){
+      html += `<div style="margin-bottom:14px">
+        <p style="font-size:11px;color:var(--muted);margin:0 0 6px">比較対象デッキ</p>
+        <div class="row">
+          <span class="pill ${compareIsAll?'active':''}" data-action="compare-all" style="padding:5px 12px;font-size:12px">全デッキ</span>`;
+      others.forEach(o=>{
+        const active = !compareIsAll && state.compareDeckIds.has(o.id);
+        html += `<span class="pill ${active?'active':''}" data-action="compare-toggle" data-id="${o.id}" style="padding:5px 12px;font-size:12px">${escapeHtml(o.name)}</span>`;
+      });
+      html += `</div></div>`;
+    }
+    html += `<div class="legend">
         <span class="chip"><span class="swatch critical"></span>1枚しかなく要入替</span>
         <span class="chip"><span class="swatch partial"></span>複数枚あるが不足</span>
         <span class="chip"><span class="swatch sufficient"></span>枚数は足りている</span>
@@ -597,7 +612,7 @@ async function updateOwnedQty(name, qty){
   await saveOwned(pid);
   render();
 }
-function selectPerson(id){ state.currentPersonId = id; state.currentDeckId = null; state.unlockDraft=''; state.unlockError=null; render(); }
+function selectPerson(id){ state.currentPersonId = id; state.currentDeckId = null; state.compareDeckIds = null; state.unlockDraft=''; state.unlockError=null; render(); }
 function askDeletePerson(id){ state.pendingDelete = { type:'person', id }; state.deletePassDraft=''; state.deletePassError=null; render(); }
 function askDeleteDeck(id){ state.pendingDelete = { type:'deck', id }; render(); }
 function cancelDelete(){ state.pendingDelete = null; state.deletePassDraft=''; state.deletePassError=null; render(); }
@@ -629,7 +644,15 @@ async function confirmDeleteDeck(){
   await saveDecks(pid);
   render();
 }
-function selectDeck(id){ state.currentDeckId = id; render(); }
+function selectDeck(id){ state.currentDeckId = id; state.compareDeckIds = null; render(); }
+function compareAll(){ state.compareDeckIds = null; render(); }
+function compareToggle(id){
+  if(!state.compareDeckIds) state.compareDeckIds = new Set();
+  if(state.compareDeckIds.has(id)) state.compareDeckIds.delete(id);
+  else state.compareDeckIds.add(id);
+  if(state.compareDeckIds.size === 0) state.compareDeckIds = null;
+  render();
+}
 
 function openDeckModal(deckId){
   if(deckId){
@@ -726,6 +749,8 @@ appEl.addEventListener('click', function(e){
     case 'try-auto-fetch': tryAutoFetch(); break;
     case 'save-deck-modal': saveDeckModal(); break;
     case 'try-unlock': tryUnlock(); break;
+    case 'compare-all': compareAll(); break;
+    case 'compare-toggle': compareToggle(id); break;
   }
 });
 
