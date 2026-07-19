@@ -139,9 +139,30 @@
 </script>
 <div class="wrap" id="app"></div>
 
-<script>
-const firebaseReady = false;
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore-compat.js"></script>
 
+<script>
+const firebaseConfig = {
+  apiKey: "AIzaSyBm-9dvk0Ds6VoAysBDjeKlJO3IbxXZ-SM",
+  authDomain: "deck-build-30944.firebaseapp.com",
+  projectId: "deck-build-30944",
+  storageBucket: "deck-build-30944.firebasestorage.app",
+  messagingSenderId: "113209534036",
+  appId: "1:113209534036:web:429f3136e351a8890eefc1"
+};
+let db = null;
+let firebaseReady = false;
+try{
+  if(typeof firebase !== 'undefined'){
+    firebase.initializeApp(firebaseConfig);
+    db = firebase.firestore();
+    firebaseReady = true;
+  }
+}catch(e){ console.error('firebase init failed', e); }
+</script>
+
+<script>
 const SECTION_RE = {
   side: /^(sideboard|side\s*-?board|sb|サイドボード)\s*:?\s*$/i,
   maybe: /^(maybeboard|maybe\s*-?board|考え中|気になるカード|検討中|カード候補)\s*:?\s*$/i,
@@ -156,16 +177,31 @@ let state = { people: [], currentPersonId: null, decksByPerson: {}, currentDeckI
 function uid(){ return Date.now().toString(36)+Math.random().toString(36).slice(2,8); }
 
 async function storageGet(key){
+  if(firebaseReady){
+    try{
+      const doc = await db.collection('kv').doc(key).get();
+      if(doc.exists) return JSON.parse(doc.data().value);
+      return null;
+    }catch(e){ console.error('firestore get failed, falling back to local storage', e); }
+  }
   try{
     const raw = localStorage.getItem('mtgds:'+key);
     return raw ? JSON.parse(raw) : null;
   }catch(e){ console.error('storage get failed', e); return null; }
 }
 async function storageSet(key, value){
+  let ok = false;
+  if(firebaseReady){
+    try{
+      await db.collection('kv').doc(key).set({ value: JSON.stringify(value) });
+      ok = true;
+    }catch(e){ console.error('firestore set failed, saving locally only', e); }
+  }
   try{
     localStorage.setItem('mtgds:'+key, JSON.stringify(value));
-    return true;
-  }catch(e){ console.error('storage set failed', e); return false; }
+    ok = true;
+  }catch(e){ console.error('local storage set failed', e); }
+  return ok;
 }
 
 async function loadAll(){
@@ -187,6 +223,8 @@ async function saveDecks(personId){ await storageSet('decks-'+personId, state.de
 function parseDecklist(raw){
   const lines = (raw || '').split(/\r?\n/);
   let section = 'main';
+  let mainTotal = 0;
+  let cutoffApplied = false;
   const buckets = { main:{}, side:{}, maybe:{} };
   for(let rawLine of lines){
     let line = rawLine.trim();
@@ -213,6 +251,15 @@ function parseDecklist(raw){
     name = name.replace(/\s*\([A-Za-z0-9]{2,6}\)\s*[\w-]*\s*$/,'').trim();
     if(!name) continue;
     buckets[section][name] = (buckets[section][name] || 0) + count;
+    if(section === 'main'){
+      mainTotal += count;
+      // 統率者戦は統率者込みで必ず100枚。見出しがない場合、100枚に達したら
+      // それ以降を自動的にサイド／気になるカード扱いに切り替える。
+      if(mainTotal >= 100 && !cutoffApplied){
+        section = 'side';
+        cutoffApplied = true;
+      }
+    }
   }
   const toArr = obj => Object.entries(obj).map(([name,count])=>({name,count}))
     .sort((a,b)=>a.name.localeCompare(b.name,'ja'));
@@ -237,7 +284,9 @@ function render(){
   let html = '';
   html += `<h1>デッキ入替アシスタント</h1>`;
   html += `<p class="sub">複数のコマンダーデッキを登録しておくと、他のデッキと共有しているカード（＝入替が必要なカード）を一目で確認できます。リンクを知っている人だけがアクセスでき、ログインは不要です。</p>`;
-  html += `<div class="card" style="border-color:var(--gold-dim)"><p style="margin:0;font-size:12.5px;color:#f5e6a8;">現在はこの端末だけに保存されるモードです（動作確認優先のため）。友人との共有機能は、この状態で正常動作を確認できたら追加します。</p></div>`;
+  if(!firebaseReady){
+    html += `<div class="card" style="border-color:var(--danger-dim)"><p style="margin:0;font-size:12.5px;color:#f0a49e;">オンライン同期が読み込めなかったため、この端末だけに保存するモードで動作しています（他の人とはまだ共有されません）。ページを再読み込みすると自動的に復旧を試みます。</p></div>`;
+  }
 
   html += `<div class="card"><div class="row" id="person-pills">`;
   state.people.forEach((p)=>{
@@ -323,7 +372,13 @@ function render(){
     if(!deck.main.length){
       html += `<div class="empty">メインボードのカードがありません。</div>`;
     } else {
-      deck.main.forEach(c=>{
+      const sortedMain = deck.main.slice().sort((a,b)=>{
+        const aShared = !!otherCardMap[a.name];
+        const bShared = !!otherCardMap[b.name];
+        if(aShared !== bShared) return aShared ? -1 : 1;
+        return a.name.localeCompare(b.name,'ja');
+      });
+      sortedMain.forEach(c=>{
         const shared = otherCardMap[c.name];
         html += `<div class="card-row ${shared?'shared':'unique'}">
           <span class="cname">${escapeHtml(c.name)}</span>
